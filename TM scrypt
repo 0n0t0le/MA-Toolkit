@@ -1,0 +1,82 @@
+// ==UserScript==
+// @name         MA Guild Flag — Own Only (Safe)
+// @namespace    MA-Guild-Tools
+// @version      1.0
+// @description  Подсветка СВОЕЙ гильдии (бой не в зачёт). Автоопределение по вашему нику. Один master CSV.
+// @match        https://magicalchemy.org/world/card-game*
+// @run-at       document-idle
+// @grant        none
+// ==/UserScript==
+
+(() => {
+  "use strict";
+
+  // RAW CSV: nickname,guild
+  const MASTER_CSV_URL = "https://raw.githubusercontent.com/0n0t0le/MA-Toolkit/main/all_players_utf8_bom.csv";
+
+  const OPP_SELECTOR = 'div[class^="PlayerName-module__PlayerName"][class*="right"] h1 span';
+  const ME_SELECTOR  = 'div[class^="PlayerName-module__PlayerName"]:not([class*="right"]) h1 span';
+  const REFRESH_MS   = 5 * 60 * 1000; // обновление CSV каждые 5 минут
+  const LS_MY_GUILD  = "MA_myGuild";
+  const LS_INIT      = "MA_initToast";
+  let DEBUG = false;
+
+  const norm = s => (s || "").toLowerCase().replace(/\s+/g, " ").trim();
+  let nickToGuild = new Map();
+  let lastOpp = "";
+
+  // UI helpers
+  const toast = (t,b="#a0c4ff",ms=2500)=>{const d=document.createElement("div");d.textContent=t;Object.assign(d.style,{position:"fixed",top:"14px",right:"14px",zIndex:999999,background:b,color:"#111",padding:"10px 14px",borderRadius:"12px",boxShadow:"0 10px 30px rgba(0,0,0,.25)",font:"600 14px/1.25 system-ui"});document.body.appendChild(d);setTimeout(()=>d.remove(),ms);};
+  const ok=t=>toast(t,"#c7f9cc"); const info=t=>toast(t,"#a0c4ff"); const dbg=t=>toast(t,"#e5e7eb",1800);
+
+  function addOwnChip(){
+    const span=document.querySelector(OPP_SELECTOR);
+    if(!span||span.parentElement.querySelector(".ma-chip"))return;
+    const chip=document.createElement("span");
+    chip.className="ma-chip"; chip.textContent="Own Guild";
+    Object.assign(chip.style,{display:"inline-block",marginLeft:"8px",padding:"2px 8px",borderRadius:"999px",background:"#34d399",color:"#063",font:"700 12px system-ui",verticalAlign:"middle"});
+    span.parentElement.appendChild(chip);
+  }
+
+  async function loadMaster(){
+    const res=await fetch(MASTER_CSV_URL,{cache:"no-store"});
+    if(!res.ok) throw new Error("CSV load failed "+res.status);
+    const map=new Map();
+    (await res.text()).trim().split(/\r?\n/).forEach(line=>{
+      if(!line) return;
+      const [nick,guild]=line.split(",");
+      if(nick) map.set(norm(nick), (guild||"").trim());
+    });
+    nickToGuild=map;
+  }
+
+  function detectMyGuildIfNeeded(){
+    const saved=localStorage.getItem(LS_MY_GUILD);
+    if(saved) return saved;
+    const me=document.querySelector(ME_SELECTOR)?.textContent?.trim();
+    const myG=me ? nickToGuild.get(norm(me)) : null;
+    if(myG){ localStorage.setItem(LS_MY_GUILD,myG); ok(`Определена ваша гильдия: ${myG}`); return myG; }
+    info("Скрипт активен: не удалось определить вашу гильдию (нет в CSV?)");
+    return null;
+  }
+
+  function checkOpponent(){
+    const opp=document.querySelector(OPP_SELECTOR)?.textContent?.trim();
+    if(!opp || opp===lastOpp) return;
+    lastOpp=opp;
+    const oppG=nickToGuild.get(norm(opp));
+    const myG =localStorage.getItem(LS_MY_GUILD);
+    if(myG && oppG && norm(myG)===norm(oppG)){ ok(`✅ СВОЙ: ${opp} · ${oppG} (бой не в зачёт)`); addOwnChip(); }
+    else if(DEBUG){ dbg(oppG ? `⚗️ Противник: ${opp} · ${oppG}` : `— Не в мастер-списке: ${opp}`); }
+  }
+
+  document.addEventListener("keydown",e=>{ if(e.altKey && e.key.toLowerCase()==="d"){ DEBUG=!DEBUG; info(`DEBUG ${DEBUG?"ON":"OFF"}`);} });
+
+  (async()=>{
+    try{ await loadMaster(); detectMyGuildIfNeeded(); }catch(e){ console.warn("[MA] init",e); info("Не удалось загрузить master CSV"); }
+    if(!localStorage.getItem(LS_INIT)){ info("Скрипт активен (Alt+D — режим проверки)"); localStorage.setItem(LS_INIT,"1"); }
+    setInterval(()=>loadMaster().catch(()=>{}), REFRESH_MS);
+    const obs=new MutationObserver(()=>checkOpponent()); obs.observe(document,{subtree:true,childList:true,characterData:true});
+    setInterval(checkOpponent,1000);
+  })();
+})();
